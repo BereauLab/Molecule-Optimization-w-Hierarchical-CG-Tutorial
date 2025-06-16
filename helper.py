@@ -15,6 +15,10 @@ logging.getLogger("pymbar").setLevel(logging.ERROR)
 from alchemlyb.estimators import MBAR
 from alchemlyb.parsing.gmx import extract_u_nk
 
+SEED = None
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+
 def run_molecule_simulations(molecule: str, delete_on_failure: bool = False):
     """
     Run all for thermodynamic integration required simulations for a two-bead molecule
@@ -145,6 +149,7 @@ def argmax_width_excluded_indices(values: np.ndarray, excluded_indices: list[int
     :param excluded_indices: A list of indices to exclude from the search for the maximum.
     :returns: The index of the maximum value, excluding specified indices.
     """
+    np.random.seed(SEED)
     if len(values) == 0:
         raise ValueError("The input array is empty.")
     mask = np.isin(np.arange(len(values)), list(excluded_indices))
@@ -167,7 +172,7 @@ class SurrogateModel:
         """
         kernel = RBF(length_scale=0.5, length_scale_bounds=(0.05, 2))
         self.gaussian_process = GaussianProcessRegressor(
-            kernel=kernel, n_restarts_optimizer=9, alpha=0.05
+            kernel=kernel, n_restarts_optimizer=9, alpha=0.05, random_state=SEED
         )
         self.latent_space = latent_space
 
