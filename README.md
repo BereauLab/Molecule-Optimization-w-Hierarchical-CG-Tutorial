@@ -2,7 +2,7 @@
 
 This repository contains a tutorial on how to use hierarchical coarse-grained models and mutli-level Bayesian optimization for molecular discovery. Although the example system is quite simple, the methods are general and can be applied to more complex systems and larger molecules.
 
-The tutorial is based on the paper [Navigating Chemical Space: Multi-Level Bayesian Optimization with Hierarchical Coarse-Graining](https://doi.org/10.48550/arXiv.2505.04169).
+The tutorial is based on the paper [Navigating Chemical Space: Multi-Level Bayesian Optimization with Hierarchical Coarse-Graining](https://doi.org/10.1039/D5SC03855C).
 
 ## Setup
 To run the tutorial, clone this repository:
