@@ -17,19 +17,25 @@ logging.getLogger("pymbar").setLevel(logging.ERROR)
 from alchemlyb.estimators import MBAR
 from alchemlyb.parsing.gmx import extract_u_nk
 
-SEED = None
+SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
 
-def run_molecule_simulations(molecule: str, delete_on_failure: bool = False):
+def run_molecule_simulations(
+    molecule: str, n_threads: int = 1, delete_on_failure: bool = False
+):
     """
     Run all for thermodynamic integration required simulations for a two-bead molecule
-    in water, hexane, and a mixture. Since minimized structure files are provided, the
-    energy minimization step is skipped.
+    in water, hexane, and a water-hexane mixture. Since minimized structure files are
+    provided, the energy minimization step is skipped.
     :param molecule: A string representing the two bead molecule in the format 'A-B'.
+    :param n_threads: Number of threads to use for the simulations (GROMACS mdrun -nt option).
     :param delete_on_failure: Delete the system simulation directory if simulation fails.
     """
+    if "-" not in molecule or len(molecule.split("-")) != 2:
+        raise ValueError("Molecule must be in the format 'A-B'")
+    n_threads = max(1, int(n_threads))
     try:
         molecule_path = Path("simulations") / molecule
         for system in ["water", "hexane", "mixture"]:
@@ -38,19 +44,23 @@ def run_molecule_simulations(molecule: str, delete_on_failure: bool = False):
             if system_path.exists():
                 continue
             system_path.mkdir(parents=True, exist_ok=True)
-            ### Setup the simulation system ###
+            ### Setup the system topology ###
             topology = Path(f"{system}-lig.top").read_text(encoding="utf-8")
             for placeholder, replacement in zip(["B1", "B2"], molecule.split("-")):
                 topology = topology.replace(placeholder, replacement)
             Path(system_path / "system.top").write_text(topology, encoding="utf-8")
             ### Perform system equilibration ###
             command = (
-                f"gmx grompp -f equilibration.mdp -c {system}-lig.gro "
-                + f"-p {system_path}/system.top -o {system_path}/equilibration.tpr "
-                + f"-po {system_path}/equilibration.out.mdp "
-                + f">> {system_path}/simulation.run.log 2>&1 "
-                + f"&& gmx mdrun -deffnm {system_path}/equilibration  -ntmpi 1 "
-                + f">> {system_path}/simulation.run.log 2>&1"
+                # Prepare the simulation input file
+                "gmx grompp -f equilibration.mdp "  # Input: Parameters
+                + f"-c {system}-lig.gro "  # Input: Starting structure
+                + f"-p {system_path}/system.top "  # Input: System topology
+                + f"-o {system_path}/equilibration.tpr "  # Output: Simulation file
+                + f"-po {system_path}/equilibration.out.mdp "  # Output: Full parameter backup
+                + f">> {system_path}/simulation.run.log 2>&1 "  # Redirect output to a log file
+                # Perform the simulation
+                + f"&& gmx mdrun -deffnm {system_path}/equilibration -ntmpi 1 -nt {n_threads} "
+                + f">> {system_path}/simulation.run.log 2>&1"  # Redirect output to a log file
             )
             print(f"Running simulation 1/9 in {system}", end="\r")
             run(command, shell=True, check=True)
@@ -70,12 +80,16 @@ def run_molecule_simulations(molecule: str, delete_on_failure: bool = False):
                 )
                 run(command, shell=True, check=True)
                 command = (
-                    f"gmx grompp -f lambda-run.mdp -c {system_path}/equilibration.gro "
-                    + f"-p {system_path}/system.top -o {lambda_path}/production.tpr "
-                    + f"-po {lambda_path}/production.out.mdp "
-                    + f">> {lambda_path}/simulation.run.log 2>&1 "
-                    + f"&& gmx mdrun -deffnm {lambda_path}/production -ntmpi 1 "
-                    + f">> {lambda_path}/simulation.run.log 2>&1"
+                    # Prepare the simulation input file
+                    "gmx grompp -f lambda-run.mdp "  # Input: Parameters
+                    + f"-c {system_path}/equilibration.gro "  # Input: Starting structure
+                    + f"-p {system_path}/system.top "  # Input: System topology
+                    + f"-o {lambda_path}/production.tpr "  # Output: Simulation file
+                    + f"-po {lambda_path}/production.out.mdp "  # Output: Full parameter backup
+                    + f">> {lambda_path}/simulation.run.log 2>&1 "  # Redirect output to a log file
+                    # Perform the simulation
+                    + f"&& gmx mdrun -deffnm {lambda_path}/production -ntmpi 1 -nt {n_threads} "
+                    + f">> {lambda_path}/simulation.run.log 2>&1"  # Redirect output to a log file
                 )
                 print(f"Running simulation {i+2}/9 in {system}", end="\r")
                 run(command, shell=True, check=True)
@@ -87,7 +101,7 @@ def run_molecule_simulations(molecule: str, delete_on_failure: bool = False):
 
 
 def calculate_free_energy(
-    molecule: str, system: str, print_result: bool = False
+    molecule: str, system: str, print_results: bool = False
 ) -> tuple[float, float]:
     """
     Calculate solvation free energies for a given molecule and system using the
@@ -95,7 +109,7 @@ def calculate_free_energy(
     completed simulations.
     :param molecule: A string representing the two bead molecule in the format 'A-B'.
     :param system: One of the three systems: 'water', 'hexane', 'mixture'
-    :param print_result: Print free energy and error estimation
+    :param print_results: Print free energy and error estimation
     :returns: The solvation free energy and an uncertainty estimate in kcal/mol.
     """
     ### Collect data from simulation output files ###
@@ -110,9 +124,11 @@ def calculate_free_energy(
         warnings.simplefilter("ignore")
         mbar = MBAR().fit(u_nk_combined)
     ### Extract result and convert unit ###
-    free_energy = float(mbar.delta_f_.iloc[0, -1]) * 0.5924  # Convert to kcal/mol
-    d_free_energy = float(mbar.d_delta_f_.iloc[0, -1]) * 0.5924  # Convert to kcal/mol
-    if print_result:
+    free_energy = float(mbar.delta_f_.iloc[0, -1]) * 0.5924  # Convert kT to kcal/mol
+    d_free_energy = (
+        float(mbar.d_delta_f_.iloc[0, -1]) * 0.5924
+    )  # Convert kT to kcal/mol
+    if print_results:
         print(f"dG_{system} = {free_energy:.3f} ± {d_free_energy:.3f} kcal/mol")
     return free_energy, d_free_energy
 
@@ -156,24 +172,25 @@ def visualize_latent_space(latent_space: torch.Tensor, molecules: list[str]):
 
 
 def acquisition_function(
-    values: torch.Tensor,
-    uncertainty: torch.Tensor,
+    values: np.ndarray,
+    uncertainty: np.ndarray,
     best_known_value: float,
     xi: float = 0.0,
-) -> torch.Tensor:
+) -> np.ndarray:
     """
     The acquisition function implemented here is the expected improvement. See this
-    link for an explanation: https://ekamperi.github.io/machine%20learning/2021/06/11/acquisition-functions.html#expected-improvement-ei
+    link for an explanation:
+    https://ekamperi.github.io/machine%20learning/2021/06/11/acquisition-functions.html#expected-improvement-ei
     :param values: Mean prediction values from the surrogate model.
     :param uncertainty: Predicted standard deviation from the surrogate model.
     :param best_known_value: Best so far observed value.
-    :param best_known_value: Best so far observed value.
+    :param xi: Shift best known value to achieve more (xi > 0) or less (xi < 0) exploration
     """
     z = values - best_known_value - xi
     return z * norm.cdf(z / uncertainty) + uncertainty * norm.pdf(z / uncertainty)
 
 
-def argmax_width_excluded_indices(
+def argmax_with_excluded_indices(
     values: np.ndarray, excluded_indices: list[int]
 ) -> int:
     """
@@ -195,7 +212,7 @@ def argmax_width_excluded_indices(
 class SurrogateModel:
     """
     A surrogate model for predicting target values based on a latent space representation.
-    This model uses a Gaussian Process Regressor with a radial basis function kernel.
+    This model uses a Gaussian Process Regressor with a radial basis function (RBF) kernel.
     It is designed to fit a set of data points and predict values for the latent space.
     """
 
@@ -203,13 +220,17 @@ class SurrogateModel:
         """
         Initialize the surrogate model with a latent space representation. The latent space
         is used for all predictions of the model.
-        :param latent_space: A Nx2 numpy array representing the latent space of N molecules.
+        :param latent_space: A Nx2 numpy array representing the 2D latent space of N molecules.
         """
         kernel = RBF(length_scale=0.5, length_scale_bounds=(0.05, 2))
         self.gaussian_process = GaussianProcessRegressor(
             kernel=kernel, n_restarts_optimizer=9, alpha=0.05, random_state=SEED
         )
         self.latent_space = latent_space
+        if not isinstance(self.latent_space, np.ndarray):
+            raise ValueError("Latent space must be a numpy array.")
+        if self.latent_space.ndim != 2 or self.latent_space.shape[1] != 2:
+            raise ValueError("Latent space must be a Nx2 dimensional array.")
 
     def fit(self, data: dict[int, float]):
         """
@@ -222,13 +243,13 @@ class SurrogateModel:
             raise ValueError("Data must be a dictionary.")
         if len(data) == 0:
             return
-        X = [self.latent_space[i] for i in data.keys()]
-        Y = list(data.values())
+        x = [self.latent_space[i] for i in data.keys()]
+        y = list(data.values())
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self.gaussian_process.fit(X, Y)
+            self.gaussian_process.fit(x, y)
 
-    def predict(self):
+    def predict(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Predict the target values for the latent space using the fitted surrogate model.
         The function does not take arguments, as it uses the latent space provided during
