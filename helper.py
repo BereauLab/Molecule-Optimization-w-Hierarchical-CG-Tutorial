@@ -2,7 +2,7 @@
 
 import warnings
 from pathlib import Path
-from subprocess import run
+from subprocess import run, CalledProcessError
 import logging
 import pandas as pd
 import numpy as np
@@ -17,9 +17,25 @@ logging.getLogger("pymbar").setLevel(logging.ERROR)
 from alchemlyb.estimators import MBAR
 from alchemlyb.parsing.gmx import extract_u_nk
 
-SEED = 42
+SEED = 18
 torch.manual_seed(SEED)
 np.random.seed(SEED)
+
+
+def _run_command(command: str, tries: int = 2):
+    """
+    Run a shell command with a specified number of retries on failure.
+    :param command: The shell command to execute.
+    :param tries: The number of attempts to run the command in case of failure.
+    """
+    for attempt in range(tries):
+        try:
+            run(command, shell=True, check=True)
+            return
+        except CalledProcessError as e:
+            print("An error occured. Retrying...")
+            if attempt == tries - 1:
+                raise e
 
 
 def run_molecule_simulations(
@@ -41,61 +57,74 @@ def run_molecule_simulations(
         for system in ["water", "hexane", "mixture"]:
             ### Directory setup ###
             system_path = molecule_path / system
-            if system_path.exists():
-                continue
             system_path.mkdir(parents=True, exist_ok=True)
             ### Setup the system topology ###
-            topology = Path(f"{system}-lig.top").read_text(encoding="utf-8")
-            for placeholder, replacement in zip(["B1", "B2"], molecule.split("-")):
-                topology = topology.replace(placeholder, replacement)
-            Path(system_path / "system.top").write_text(topology, encoding="utf-8")
+            if not Path(system_path / "system.top").exists():
+                topology = Path(f"{system}-lig.top").read_text(encoding="utf-8")
+                for placeholder, replacement in zip(["B1", "B2"], molecule.split("-")):
+                    topology = topology.replace(placeholder, replacement)
+                Path(system_path / "system.top").write_text(topology, encoding="utf-8")
+            ### Adjust ligand pulling in equilibration based on the environment. ###
+            if system == "mixture":
+                _run_command("sed -i 's/^;pull/pull/g' equilibration.mdp")
+            else:
+                _run_command("sed -i 's/^pull/;pull/g' equilibration.mdp")
             ### Perform system equilibration ###
-            command = (
-                # Prepare the simulation input file
-                "gmx grompp -f equilibration.mdp "  # Input: Parameters
-                + f"-c {system}-lig.gro "  # Input: Starting structure
-                + f"-p {system_path}/system.top "  # Input: System topology
-                + f"-o {system_path}/equilibration.tpr "  # Output: Simulation file
-                + f"-po {system_path}/equilibration.out.mdp "  # Output: Full parameter backup
-                + f">> {system_path}/simulation.run.log 2>&1 "  # Redirect output to a log file
-                # Perform the simulation
-                + f"&& gmx mdrun -deffnm {system_path}/equilibration -ntmpi 1 -nt {n_threads} "
-                + f">> {system_path}/simulation.run.log 2>&1"  # Redirect output to a log file
-            )
+            if not Path(system_path / "equilibration.gro").exists():
+                command = (
+                    # Prepare the simulation input file
+                    "gmx grompp -f equilibration.mdp "  # Input: Parameters
+                    + f"-c {system}-lig.gro "  # Input: Starting structure
+                    + f"-p {system_path}/system.top "  # Input: System topology
+                    + (
+                        "-n mixture-lig.ndx " if system == "mixture" else ""
+                    )  # Input: Index file
+                    + f"-o {system_path}/equilibration.tpr "  # Output: Simulation file
+                    + f"-po {system_path}/equilibration.out.mdp "  # Output: Full parameter backup
+                    + f">> {system_path}/simulation.run.log 2>&1 "  # Redirect output to a log file
+                    # Perform the simulation
+                    + f"&& gmx mdrun -deffnm {system_path}/equilibration -nt {n_threads} "
+                    + f">> {system_path}/simulation.run.log 2>&1"  # Redirect output to a log file
+                )
+                _run_command(command)
             print(f"Running simulation 1/9 in {system}", end="\r")
-            run(command, shell=True, check=True)
-            ### Adjust the number of integration steps depending on the environment. ###
+            ### Adjust the number of integration steps and pull setup based on the environment. ###
             command = 'sed -i "s/^nsteps.*/nsteps                   = {nsteps}/" lambda-run.mdp'
             if system == "mixture":
-                run(command.format(nsteps=30000), shell=True, check=True)
+                _run_command(command.format(nsteps=30000))
+                # Enable ligand pulling in mixture simulations
+                _run_command("sed -i 's/^;pull/pull/g' lambda-run.mdp")
             else:
-                run(command.format(nsteps=20000), shell=True, check=True)
+                _run_command(command.format(nsteps=20000))
+                # Disable ligand pulling in mixture simulations
+                _run_command("sed -i 's/^pull/;pull/g' lambda-run.mdp")
             ### Run eight lambda-step simulations ###
             for i in range(8):
                 lambda_path = system_path / f"lambda{i}"
                 lambda_path.mkdir(exist_ok=True)
-                command = (
-                    f'sed -i "s/^init-lambda-state.*/init-lambda-state        = {i}/" '
-                    + "lambda-run.mdp"
-                )
-                run(command, shell=True, check=True)
-                command = (
-                    # Prepare the simulation input file
-                    "gmx grompp -f lambda-run.mdp "  # Input: Parameters
-                    + f"-c {system_path}/equilibration.gro "  # Input: Starting structure
-                    + f"-p {system_path}/system.top "  # Input: System topology
-                    + f"-o {lambda_path}/production.tpr "  # Output: Simulation file
-                    + f"-po {lambda_path}/production.out.mdp "  # Output: Full parameter backup
-                    + f">> {lambda_path}/simulation.run.log 2>&1 "  # Redirect output to a log file
-                    # Perform the simulation
-                    + f"&& gmx mdrun -deffnm {lambda_path}/production -ntmpi 1 -nt {n_threads} "
-                    + f">> {lambda_path}/simulation.run.log 2>&1"  # Redirect output to a log file
-                )
+                if not Path(lambda_path / "production.gro").exists():
+                    _run_command(
+                        f'sed -i "s/^init-lambda-state.*/init-lambda-state        = {i}/" '
+                        + "lambda-run.mdp"
+                    )
+                    command = (
+                        # Prepare the simulation input file
+                        "gmx grompp -f lambda-run.mdp "  # Input: Parameters
+                        + f"-c {system_path}/equilibration.gro "  # Input: Starting structure
+                        + f"-p {system_path}/system.top "  # Input: System topology
+                        + ("-n mixture-lig.ndx " if system == "mixture" else "")
+                        + f"-o {lambda_path}/production.tpr "  # Output: Simulation file
+                        + f"-po {lambda_path}/production.out.mdp "  # Output: Full parameter backup
+                        + f">> {lambda_path}/simulation.run.log 2>&1 "  # Redirect output to file
+                        # Perform the simulation
+                        + f"&& gmx mdrun -deffnm {lambda_path}/production -nt {n_threads} "
+                        + f">> {lambda_path}/simulation.run.log 2>&1"  # Redirect output to file
+                    )
+                    _run_command(command)
                 print(f"Running simulation {i+2}/9 in {system}", end="\r")
-                run(command, shell=True, check=True)
     except Exception as e:
         if delete_on_failure:
-            run(f"rm -r {system_path}", shell=True, check=True)
+            _run_command(f"rm -r {system_path}")
         print(f"Failed to simulate {molecule}, please retry")
         raise e
 

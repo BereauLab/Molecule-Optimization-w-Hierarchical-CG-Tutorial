@@ -1,7 +1,7 @@
 ; General setup
 integrator               = sd
 dt                       = 0.02
-nsteps                   = 20000
+nsteps                   = 30000
 ; Output
 nstxout                  = 0
 nstvout                  = 0
@@ -49,3 +49,29 @@ couple-lambda1           = none
 init-lambda-state        = 1
 vdw-lambdas              = 0.000 0.143 0.286 0.429 0.571 0.714 0.857 1.000
 calc-lambda-neighbors    = -1
+; COM pulling
+pull                     = yes
+pull-pbc-ref-prev-step-com = yes
+pull-ngroups             = 3
+pull-ncoords             = 3
+pull-group1-name         = W
+pull-group1-pbcatom      = 6
+pull-group2-name         = HEX
+pull-group2-pbcatom      = 21
+pull-group3-name         = LIG
+pull-coord1-type         = umbrella
+pull-coord1-geometry     = distance
+pull-coord1-groups       = 1 3
+pull-coord1-dim          = N Y N
+pull-coord1-k            = 0
+pull-coord2-type         = umbrella
+pull-coord2-geometry     = distance
+pull-coord2-groups       = 2 3
+pull-coord2-dim          = N Y N
+pull-coord2-k            = 0
+pull-coord3-type         = umbrella
+pull-coord3-geometry     = transformation
+pull-coord3-dim          = N Y N
+pull-coord3-expression   = (x1 - x2)^2
+pull-coord3-init         = 0.0
+pull-coord3-k            = 100
