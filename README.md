@@ -1,6 +1,6 @@
 # Tutorial on Coarse-Grained Molecular Optimization
 
-This repository contains a tutorial on how to use hierarchical coarse-grained models and mutli-level Bayesian optimization for molecular discovery. Although the example system is quite simple, the methods are general and can be applied to more complex systems and larger molecules.
+This repository provides a tutorial on using hierarchical coarse-grained models and multi-level Bayesian optimization for molecular discovery. While the example system is simple, the underlying methods are broadly applicable to more complex systems and larger molecules.
 
 The tutorial is based on the paper [Navigating Chemical Space: Multi-Level Bayesian Optimization with Hierarchical Coarse-Graining](https://doi.org/10.1039/D5SC03855C).
 
@@ -15,7 +15,7 @@ cd Molecule-Optimization-w-Hierarchical-Coarse-Graining
 Next, a few dependencies are required:
 - [GROMACS](https://www.gromacs.org/): This program is used to run molecular dynamics simulations. See [this page](https://manual.gromacs.org/current/install-guide/index.html) for installation instructions.
 
-- Python packages: The provided `requirements.txt` file lists the necessary python packages. You can install them using pip:
+- Python packages: The provided `requirements.txt` file lists the necessary Python packages. You can install them using pip:
 
     ```bash
     pip install -r requirements.txt
