@@ -24,9 +24,10 @@ np.random.seed(SEED)
 
 def _run_command(command: str, tries: int = 2):
     """
-    Run a shell command with a specified number of retries on failure.
+    Run a shell command with a specified number of tries in case of failure.
+    If the command fails after the specified number of tries, the exception is raised.
     :param command: The shell command to execute.
-    :param tries: The number of attempts to run the command in case of failure.
+    :param tries: The number of total attempts to run the command.
     """
     for attempt in range(tries):
         try:
@@ -42,9 +43,9 @@ def run_molecule_simulations(
     molecule: str, n_threads: int = 1, delete_on_failure: bool = False
 ):
     """
-    Run all for thermodynamic integration required simulations for a two-bead molecule
-    in water, hexane, and a water-hexane mixture. Since minimized structure files are
-    provided, the energy minimization step is skipped.
+    Run all simulations required for thermodynamic integration of a two-bead molecule in water,
+    hexane, and a water-hexane mixture. Since the minimized structure files are provided, the
+    energy minimization step is skipped.
     :param molecule: A string representing the two bead molecule in the format 'A-B'.
     :param n_threads: Number of threads to use for the simulations (GROMACS mdrun -nt option).
     :param delete_on_failure: Delete the system simulation directory if simulation fails.
@@ -78,7 +79,7 @@ def run_molecule_simulations(
                     + f"-p {system_path}/system.top "  # Input: System topology
                     + (
                         "-n mixture-lig.ndx " if system == "mixture" else ""
-                    )  # Input: Index file
+                    )  # Input: Index file if solvent mixture simulation
                     + f"-o {system_path}/equilibration.tpr "  # Output: Simulation file
                     + f"-po {system_path}/equilibration.out.mdp "  # Output: Full parameter backup
                     + f">> {system_path}/simulation.run.log 2>&1 "  # Redirect output to a log file
@@ -96,7 +97,7 @@ def run_molecule_simulations(
                 _run_command("sed -i 's/^;pull/pull/g' lambda-run.mdp")
             else:
                 _run_command(command.format(nsteps=20000))
-                # Disable ligand pulling in mixture simulations
+                # Disable ligand pulling in pure solvent simulations
                 _run_command("sed -i 's/^pull/;pull/g' lambda-run.mdp")
             ### Run eight lambda-step simulations ###
             for i in range(8):
@@ -112,7 +113,9 @@ def run_molecule_simulations(
                         "gmx grompp -f lambda-run.mdp "  # Input: Parameters
                         + f"-c {system_path}/equilibration.gro "  # Input: Starting structure
                         + f"-p {system_path}/system.top "  # Input: System topology
-                        + ("-n mixture-lig.ndx " if system == "mixture" else "")
+                        + (
+                            "-n mixture-lig.ndx " if system == "mixture" else ""
+                        )  # Input: Index file if solvent mixture simulation
                         + f"-o {lambda_path}/production.tpr "  # Output: Simulation file
                         + f"-po {lambda_path}/production.out.mdp "  # Output: Full parameter backup
                         + f">> {lambda_path}/simulation.run.log 2>&1 "  # Redirect output to file
