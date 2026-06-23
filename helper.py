@@ -10,6 +10,7 @@ import torch
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 import seaborn as sns
+import MDAnalysis as mda
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF
 
@@ -124,7 +125,7 @@ def run_molecule_simulations(
                         + f">> {lambda_path}/simulation.run.log 2>&1"  # Redirect output to file
                     )
                     _run_command(command)
-                print(f"Running simulation {i+2}/9 in {system}", end="\r")
+                print(f"Running simulation {i + 2}/9 in {system}", end="\r")
     except Exception as e:
         if delete_on_failure:
             _run_command(f"rm -r {system_path}")
@@ -163,6 +164,31 @@ def calculate_free_energy(
     if print_results:
         print(f"dG_{system} = {free_energy:.3f} ± {d_free_energy:.3f} kcal/mol")
     return free_energy, d_free_energy
+
+
+def convert_to_sdf(structure_path, trajectory_path, output_path, stride=1):
+    """GROMACS .tpr/.xtc -> multi-frame .sdf with explicit bonds."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore")
+        u = mda.Universe(structure_path, trajectory_path)
+    bonds = [(b.atoms[0].index + 1, b.atoms[1].index + 1) for b in u.bonds]
+    elem = [
+        "O" if r == "W" else "C" for r in u.atoms.resnames
+    ]  # hexane=C, water=O (color tags)
+    na, nb = len(u.atoms), len(bonds)
+    with open(output_path, "w") as fh:
+        for ts in u.trajectory[::stride]:
+            fh.write("frame\n  MDAnalysis\n\n")
+            fh.write("%3d%3d  0  0  0  0  0  0  0  0999 V2000\n" % (na, nb))
+            for i, a in enumerate(u.atoms):
+                x, y, z = a.position
+                fh.write(
+                    "%10.4f%10.4f%10.4f %-3s 0  0  0  0  0  0  0  0  0  0  0  0\n"
+                    % (x, y, z, elem[i])
+                )
+            for p, q in bonds:
+                fh.write("%3d%3d  1  0\n" % (p, q))
+            fh.write("M  END\n$$$$\n")
 
 
 def visualize_latent_space(latent_space: torch.Tensor, molecules: list[str]):
